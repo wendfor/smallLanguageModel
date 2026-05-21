@@ -5,7 +5,7 @@ from transformers import AutoTokenizer
 import sys, os
 __package__ = "train"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from dataset.pretrain_dataset import *
+from dataset.sft_dataset import *
 from model.model import *
 from train_utils.utils import *
 import time
@@ -59,7 +59,7 @@ def train(model, optimizer, scheduler, train_loader, device):
         'scheduler_state_dict': scheduler.state_dict(),
       }
       # 保存每个epoch的模型
-      torch.save(checkpoint, save_file+"pretrain_model.pt")
+      torch.save(checkpoint, save_file+"sft_model.pt")
 
   return total_loss
 
@@ -68,7 +68,8 @@ if __name__ == "__main__":
   accumulation_steps: int = 8 #梯度累积步数
   epoch_num: int = 2  
   dtype = torch.bfloat16 #混合精度类型
-  data_path: str = "/myfile/data/dataset/pretrain_t2t.jsonl"
+  data_path: str = "/myfile/data/dataset/sft_data.jsonl"
+  model_path: str = "/myfile/data/checkpoints/pretrain_model.pt"
   save_file: str = "/myfile/data/checkpoints/"
   num_workers: int = 8 #多线程加载数据
   batch_size: int = 50
@@ -90,6 +91,7 @@ if __name__ == "__main__":
 
   print("************init model**************")
   model = Model(ModelConfig(batch_size=batch_size, max_seq_len=max_seq_len))
+  model.load_state_dict(torch.load(model_path)['model_state_dict'], strict=True)
   #device = "cuda" if torch.cuda.is_available() else "cpu"
   model = model.to(device)
   tokenizer = AutoTokenizer.from_pretrained("/myfile/data/minimind")
@@ -99,7 +101,7 @@ if __name__ == "__main__":
   print(f"Total parameters: {total_params / 1e6} M")
   
   print("**************load data***************")
-  train_dataset = PretrainDataset(data_path=data_path, tokenizer=tokenizer, max_seq_len=max_seq_len)
+  train_dataset = SFTDataset(data_path=data_path, tokenizer=tokenizer, max_seq_len=max_seq_len)
   train_sampler = DistributedSampler(train_dataset) if dist.is_initialized() else None
   
   #adamw

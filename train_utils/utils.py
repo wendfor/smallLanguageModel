@@ -45,8 +45,8 @@ class SkipBatchSampler(Sampler):
           continue
         yield batch
         batch = []
-      if len(batch) > 0 and skipped >= self.skip_batches:
-        yield batch
+    if len(batch) > 0 and skipped >= self.skip_batches:
+      yield batch
 
   def __len__(self):
     total_batches = (len(self.sampler) + self.batch_size - 1) // self.batch_size
