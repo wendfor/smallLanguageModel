@@ -2,10 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-import dataclasses
 
-
-@dataclasses
 class ModelConfig:
   def __init__(self, max_seq_len, batch_size):
     self.max_seq_len: int = max_seq_len #文本的最大长度
@@ -20,6 +17,7 @@ class ModelConfig:
     self.head_dim: int = self.n_embd // self.n_head
     self.vocab_size: int = 6400
     self.flash_attn: bool = True
+    self.orig_max_seq_len: int = 512
 
 
 class RMSNorm(nn.Module):
@@ -34,9 +32,24 @@ class RMSNorm(nn.Module):
   def forward(self, x):
     return (self.weight * self.norm(x.float())).type_as(x)
       
-def freqs_get(head_dim, seq_len, theta: float = 1e6):
+def freqs_get(head_dim, seq_len, theta: float = 1e6, rope_scaling: dict = None):
   freqs = torch.arange(0, head_dim, 2)[:(head_dim//2)].float()#对head_dim为奇数的处理
   freqs = 1.0 / (theta ** (freqs/head_dim))
+  if rope_scaling is not None:
+    orig_max_seq_len, beta_fast, beta_slow = (
+      rope_scaling.get("orig_max_seq_len", 512), rope_scaling.get("beta_fast", 32), rope_scaling.get("beta_slow", 1.0)
+    ) 
+    #上下文缩放比例
+    s = seq_len / orig_max_seq_len
+    if s > 1.0:
+      #频率阈值    
+      high = head_dim * torch.log(orig_max_seq_len / (2 * math.pi * beta_fast) / 2 * torch.log(theta))
+      slow = head_dim * torch.log(orig_max_seq_len / (2 * math.pi * beta_slow) / 2 * torch.log(theta))
+      high = min(math.ceil(high), head_dim//2 - 1)
+      slow = max(math.floor(slow), 0)
+      #不同频率区域的缩放程度 <slow 内插   >high 线性插值  中间区域 ramp
+      ramp = torch.clamp(((torch.arange(head_dim//2, device=freqs.device) - slow )/ max(high - slow, 0.001)), 0, 1)
+      freqs = freqs * (1 - ramp + ramp / s)
   m = torch.arange(seq_len, device=freqs.device)
   freqs = torch.outer(m, freqs).float()
   freqs_cos = torch.cat([torch.cos(freqs), torch.cos(freqs)], dim=-1)
@@ -75,7 +88,7 @@ class MultiheadAttention(nn.Module):
     #flash attn
     self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and config.flash_attn
 
-  def forward(self, x: torch.Tensor, rope_states: torch.Tensor, use_cache: bool = False, kv_cache: torch.Tensor = None, attn_mask: torch.Tensor = None):
+  def forward(self, x: torch.Tensor, rope_states: torch.Tensor, use_cache: bool = False, kv_cache: torch.Tensor = None, attn_mask: torch.Tensor = None, mscale: float = 1.0):
     """
       Args:
           x: 输入，shape (batch, seq_len, config.n_embd)
@@ -114,7 +127,7 @@ class MultiheadAttention(nn.Module):
 
     kv_cache = (k, v) if use_cache else None
     if self.flash and (seq_len > 1) and (attn_mask is None or torch.all(attn_mask == 1)):
-      attn_output = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout_p if self.training else 0.0, is_causal=True)
+      attn_output = F.scaled_dot_product_attention(q, k, v, scale=mscale*(1.0/math.sqrt(self.head_dim)) ,dropout_p=self.dropout_p if self.training else 0.0, is_causal=True)
     else:
       attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
       #d = 0 if kv_cache is None else kv_cache[0].shape[2]
@@ -122,7 +135,7 @@ class MultiheadAttention(nn.Module):
             
       if attn_mask is not None:#attn_mask [b, s]
         attn_scores += (1.0 - attn_mask.unsqueeze(1).unsqueeze(2)) * -1e9
-
+      atten_scores = atten_scores * mscale
       attn_probs = torch.softmax(attn_scores, dim=-1)
       attn_probs = self.dropout(attn_probs)
       # 向量加权求和
@@ -163,9 +176,9 @@ class Block(nn.Module):
     #self.ln1 = nn.LayerNorm(config.n_embd)
     #self.ln2 = nn.LayerNorm(config.n_embd)
   
-  def forward(self, x: torch.Tensor, rope_states: torch.Tensor, use_cache: bool = False, kv_cache: torch.Tensor = None, attn_mask: torch.Tensor = None):
+  def forward(self, x: torch.Tensor, rope_states: torch.Tensor, use_cache: bool = False, kv_cache: torch.Tensor = None, attn_mask: torch.Tensor = None, mscale: float = 1.0):
     # 前归一化
-    hidden_states, kv_cache = self.mha(self.rn1(x), rope_states, use_cache=use_cache, kv_cache=kv_cache, attn_mask=attn_mask)
+    hidden_states, kv_cache = self.mha(self.rn1(x), rope_states, use_cache=use_cache, kv_cache=kv_cache, attn_mask=attn_mask, mscale=mscale)
     hidden_states = x + hidden_states
     output = hidden_states + self.ffn(self.rn2(hidden_states))
     return output, kv_cache
@@ -173,7 +186,7 @@ class Block(nn.Module):
 class Model(nn.Module):
   def __init__(self, config: ModelConfig):
     super().__init__()
-    self.block_size = config.block_size
+    self.max_seq_len = config.max_seq_len
     self.eos_token_id = 2
     self.token_embedding_table = nn.Embedding(config.vocab_size, config.n_embd)
     #self.position_embedding_table = nn.Embedding(config.block_size, config.n_embd)
@@ -186,7 +199,16 @@ class Model(nn.Module):
     #tie weight来减少参数 // linear layer weight实际形状是倒的
     self.token_embedding_table.weight = self.lm_head.weight
     #rope buffer
-    cos, sin = freqs_get(config.head_dim, config.block_size)
+    rope_scaling = None
+    self.mscale = 1.0
+    if config.max_seq_len > config.orig_max_seq_len:
+      rope_scaling = {
+        "beta_fast": 32.0,
+        "beta_slow": 1.0,
+        "orig_max_seq_len": 512
+      }
+      self.mscale = 0.1 * torch.log(config.max_seq_len/config.orig_max_seq_len) + 1
+    cos, sin = freqs_get(config.head_dim, config.max_seq_len, rope_scaling=rope_scaling)
     self.register_buffer("freqs_cos", cos, persistent=False)
     self.register_buffer("freqs_sin", sin, persistent=False)
     #init weights
@@ -222,7 +244,7 @@ class Model(nn.Module):
     KV_cache = KV_cache or [None] * len(self.blocks)
     present = []
     for block, kv_cache in zip(self.blocks, KV_cache):
-        hidden_states, new_kv_cache = block(hidden_states, rope_states, use_cache=use_cache, kv_cache=kv_cache, attn_mask=attn_mask)
+        hidden_states, new_kv_cache = block(hidden_states, rope_states, use_cache=use_cache, kv_cache=kv_cache, attn_mask=attn_mask, mscale=self.mscale)
         present.append(new_kv_cache)
     hidden_states = self.final_rn(hidden_states)
     logits = self.lm_head(hidden_states)
@@ -244,9 +266,9 @@ class Model(nn.Module):
     finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)
     if streamer : streamer.put(input_ids.cpu())
     for _ in range(max_new_tokens):
-      # 如果序列太长，只取最后 block_size 个token
-      if input_ids.size(1) > self.block_size and KV_cache is not None:
-        KV_cache = [(k[:,:,-self.block_size:,:], v[:,:,-self.block_size:,:])
+      # 如果序列太长，只取最后 max_seq_len 个token
+      if input_ids.size(1) > self.max_seq_len and KV_cache is not None:
+        KV_cache = [(k[:,:,-self.max_seq_len:,:], v[:,:,-self.max_seq_len:,:])
                 for k, v in KV_cache]
       # 前向计算
       logits, loss, KV_cache = self(ids, use_cache=True, KV_cache=KV_cache)

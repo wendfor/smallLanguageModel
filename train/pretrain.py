@@ -70,7 +70,7 @@ if __name__ == "__main__":
   save_file: str = "/myfile/data/checkpoints/"
   num_workers: int = 8 #多线程加载数据
   batch_size: int = 50
-  max_seq_len: int = 512
+  max_seq_len: int = 2048
   
   local_rank = init_distributed_mode()
   if dist.is_initialized(): 
