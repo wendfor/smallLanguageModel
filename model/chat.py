@@ -3,14 +3,21 @@ import torch
 from prompt_toolkit import prompt
 from transformers import AutoTokenizer, TextStreamer
 from model.model import *
+from train_utils.lora import *
 
 if __name__ == "__main__":
     # 初始化
-    path = '/myfile/data/checkpoints/sft_model.pt'
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = Model(ModelConfig(2000, 50))
+    model_type = "lora"
+    if model_type == "lora":
+        path = '/myfile/data/checkpoints/merge_model.pt'  
+        model = Model(ModelConfig(2000, 50))
+        model.load_state_dict(torch.load(path, map_location="cpu"), strict=True)#torch.load默认加载到数据保存时的设备，显式指定加载到cpu
+    else:
+        path = '/myfile/data/checkpoints/sft_model.pt'  
+        model = Model(ModelConfig(2000, 50))
+        model.load_state_dict(torch.load(path, map_location="cpu")['model_state_dict'], strict=True)#torch.load默认加载到数据保存时的设备，显式指定加载到cpu
 
-    model.load_state_dict(torch.load(path, map_location="cpu")['model_state_dict'], strict=True)#torch.load默认加载到数据保存时的设备，显式指定加载到cpu
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = model.to(device)
     model.eval()
     enc = AutoTokenizer.from_pretrained("./")

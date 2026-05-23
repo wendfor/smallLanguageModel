@@ -23,6 +23,7 @@ def apply_lora(model, lora_config):
       #绑定lora
       setattr(module, "lora", lora)
       orig_forward = module.forward
+      module.orig_forward = orig_forward
       
       def forward_with_lora(x, f1=orig_forward, f2=lora): 
         return f1(x) + scaling * f2(x)
@@ -63,23 +64,20 @@ def save_lora(model, save_path: str, lora_config: LoraConfig):
   torch.save({"state_dict": state_dict}, save_path+"lora_model.pt")
   
   
-def merge_lora(model, lora_path: str, save_path: str):
+def merge_lora(model, lora_path: str):
   with open(lora_path+"lora_config.json", 'r') as f:
     config = json.load(f)
   r = config["rank"]
   alpha = config["alpha"]
-  target_modules = config["target_modules"]
-  
+
+  scaling = alpha / r
   load_lora(model, lora_path)
   orig_model = getattr(model, "_orig_mod", model)
   state_dict = {k : v.cpu().half() for k, v in orig_model.state_dict().items() if ".lora." not in k}
   for name, module in orig_model.named_modules():
     if isinstance(module, nn.Linear) and hasattr(module, "lora"):
-      state_dict[f"{name}.weight"] =(module.weight.detach().cpu().half() + (module.lora.B.weight @ module.lora.A.weight).detach().cpu().half())
-      module.forward = module.orig_forward
-      delattr(module, "orig_forward")
-      delattr(module, "lora")
-      
-  torch.save(state_dict, save_path)
+      state_dict[f"{name}.weight"] =(module.weight.detach().cpu().half() + scaling * (module.lora.B.weight @ module.lora.A.weight).detach().cpu().half())
+  
+  torch.save(state_dict, lora_path+"merge_model.pt")
       
   
