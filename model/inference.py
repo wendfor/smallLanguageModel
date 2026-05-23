@@ -19,6 +19,7 @@ if __name__ == "__main__":
     print("对话系统已启动（输入 'quit' 退出，'clear' 清空历史）")
     print("="*50)
     streamer = TextStreamer(tokenizer=enc, skip_prompt=True, skip_special_tokens=True)
+    bos_token_id = enc.bos_token_id
     while True:
         user_input = prompt("\n你: ")
 
@@ -30,8 +31,8 @@ if __name__ == "__main__":
 
         try:
             with torch.inference_mode():
-                inputs = enc.apply_chat_template(user_input, add_generate_prompt=True, tokenizer=True, return_dict=True, return_tensors="pt")
-                _, response, kv_cache = model.generate(input_ids=inputs["input_ids"], max_new_tokens=1000, streamer=streamer, KV_cache=kv_cache)
+                input_ids = torch.tensor([bos_token_id] + enc.encode(user_input)).unsqueeze(0)
+                _, response, _ = model.generate(input_ids=input_ids, max_new_tokens=1000, streamer=streamer)
                 # responese = response.cpu()
                 # response = enc.decode(response.tolist(), skip_special_tokens=True)[0]
                 # print(f"\n助手: {response}")

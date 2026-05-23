@@ -9,6 +9,7 @@ dataset/
 model/  
   model.py               定义模型
   chat.py                运行模型
+  tokenizer               词表
 train/
   pretrain.py           预训练过程 
   sft.py                全参微调过程

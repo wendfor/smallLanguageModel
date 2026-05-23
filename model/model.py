@@ -75,7 +75,7 @@ class MultiheadAttention(nn.Module):
     #flash attn
     self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and config.flash_attn
 
-  def forward(self, x: torch.Tensor, rope_states: torch.tensor, use_cache: bool = False, kv_cache: torch.tensor = None, attn_mask: torch.Tensor = None):
+  def forward(self, x: torch.Tensor, rope_states: torch.Tensor, use_cache: bool = False, kv_cache: torch.Tensor = None, attn_mask: torch.Tensor = None):
     """
       Args:
           x: 输入，shape (batch, seq_len, config.n_embd)
@@ -145,7 +145,7 @@ class FFN(nn.Module):
     self.down = nn.Linear(mid_dim, config.hidden_dim, bias=False)
     self.dropout = nn.Dropout(config.dropout)
 
-  def forward(self, x: torch.tensor):
+  def forward(self, x: torch.Tensor):
     w1 = F.silu(self.gate(x))
     w2 = self.up(x)
     gate = w1*w2
@@ -163,7 +163,7 @@ class Block(nn.Module):
     #self.ln1 = nn.LayerNorm(config.n_embd)
     #self.ln2 = nn.LayerNorm(config.n_embd)
   
-  def forward(self, x: torch.tensor, rope_states: torch.tensor, use_cache: bool = False, kv_cache: torch.tensor = None, attn_mask: torch.tensor = None):
+  def forward(self, x: torch.Tensor, rope_states: torch.Tensor, use_cache: bool = False, kv_cache: torch.Tensor = None, attn_mask: torch.Tensor = None):
     # 前归一化
     hidden_states, kv_cache = self.mha(self.rn1(x), rope_states, use_cache=use_cache, kv_cache=kv_cache, attn_mask=attn_mask)
     hidden_states = x + hidden_states
@@ -175,7 +175,6 @@ class Model(nn.Module):
     super().__init__()
     self.block_size = config.block_size
     self.eos_token_id = 2
-    self.KV_cache = None
     self.token_embedding_table = nn.Embedding(config.vocab_size, config.n_embd)
     #self.position_embedding_table = nn.Embedding(config.block_size, config.n_embd)
     self.blocks = nn.ModuleList(
@@ -201,7 +200,7 @@ class Model(nn.Module):
     elif isinstance(module, nn.Embedding):
       nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-  def forward(self, input_ids: torch.tensor, labels: torch.tensor = None, use_cache: bool = False, KV_cache: torch.tensor = None, attn_mask: torch.tensor = None):
+  def forward(self, input_ids: torch.Tensor, labels: torch.Tensor = None, use_cache: bool = False, KV_cache: torch.Tensor = None, attn_mask: torch.Tensor = None):
     """
       Args:
           input_ids 是输入token_ids [b， s]
@@ -239,11 +238,11 @@ class Model(nn.Module):
     return logits, loss, present
   
   
-  def generate(self, input_ids: torch.tensor, max_new_tokens: int, temperature: float = 0.8, top_p: float = 0.9, top_k: int = 50):
-    KV_cache = None
+  def generate(self, input_ids: torch.Tensor, max_new_tokens: int, KV_cache: torch.Tensor = None, streamer = None, temperature: float = 0.8, top_p: float = 0.9, top_k: int = 50):
     ids = input_ids
-    gen_ids = torch.zeros((input_ids.size(0), 0), dtype=torch.long, device=input_ids.device)
+    completion_ids = torch.zeros((input_ids.size(0), 0), dtype=torch.long, device=input_ids.device)
     finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)
+    if streamer : streamer.put(input_ids.cpu())
     for _ in range(max_new_tokens):
       # 如果序列太长，只取最后 block_size 个token
       if input_ids.size(1) > self.block_size and KV_cache is not None:
@@ -270,12 +269,14 @@ class Model(nn.Module):
       probs = F.softmax(logits, dim=-1)
       # 采样下一个token
       ids = torch.multinomial(probs, num_samples=1)  # (B, 1)
+      if streamer: streamer.put(ids.cpu())
       finished = finished | (ids.squeeze(-1) == self.eos_token_id)
       # 附加到序列上
       input_ids = torch.cat([input_ids, ids], dim=1)  # (B, T+1)
-      gen_ids = torch.cat([gen_ids, ids], dim=1)
+      completion_ids = torch.cat([completion_ids, ids], dim=1)
     
-    return input_ids, gen_ids
+    if streamer: streamer.end()
+    return input_ids, completion_ids, KV_cache
 
 
 
