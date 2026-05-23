@@ -2,11 +2,11 @@ from model import*
 import torch
 from prompt_toolkit import prompt
 from transformers import AutoTokenizer, TextStreamer
-from model.model import *
+from model import *
 
 if __name__ == "__main__":
     # 初始化
-    path = '/myfile/data/checkpoints/sft_model.pt'
+    path = '/myfile/data/checkpoints/pretrain_model.pt'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = Model(ModelConfig(2000, 50))
 
@@ -31,9 +31,9 @@ if __name__ == "__main__":
 
         try:
             with torch.inference_mode():
-                input_ids = torch.tensor([bos_token_id] + enc.encode(user_input)).unsqueeze(0)
+                input_ids = torch.tensor([bos_token_id] + enc.encode(user_input), device=device).unsqueeze(0)
                 _, response, _ = model.generate(input_ids=input_ids, max_new_tokens=1000, streamer=streamer)
-                # responese = response.cpu()
+                # response = response.cpu()
                 # response = enc.decode(response.tolist(), skip_special_tokens=True)[0]
                 # print(f"\n助手: {response}")
         except Exception as e:

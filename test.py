@@ -1,14 +1,5 @@
 import numpy as np
 import torch
-def test(x):
+a = torch.tensor([0, 0, 0])
   
-  for j in x:
-    def compute():
-      return j#1,2,3
-    j += compute()
-    
-  
-
-x = torch.tensor([1,2,3])
-print(test(x))
-print(x)
+print(a.all())

@@ -2,7 +2,7 @@ from model import*
 import torch
 from prompt_toolkit import prompt
 from transformers import AutoTokenizer, TextStreamer
-from model.model import *
+from model import *
 from train_utils.lora import *
 
 if __name__ == "__main__":
@@ -39,7 +39,7 @@ if __name__ == "__main__":
             with torch.inference_mode():
                 inputs = enc.apply_chat_template(user_input, add_generate_prompt=True, tokenizer=True, return_dict=True, return_tensors="pt")
                 _, response, kv_cache = model.generate(input_ids=inputs["input_ids"], max_new_tokens=1000, streamer=streamer, KV_cache=kv_cache)
-                # responese = response.cpu()
+                # response = response.cpu()
                 # response = enc.decode(response.tolist(), skip_special_tokens=True)[0]
                 # print(f"\n助手: {response}")
         except Exception as e:

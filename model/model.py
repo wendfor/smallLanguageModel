@@ -7,9 +7,9 @@ class ModelConfig:
   def __init__(self, max_seq_len, batch_size):
     self.max_seq_len: int = max_seq_len #文本的最大长度
     self.batch_size: int = batch_size
-    self.n_layer: int = 10
-    self.n_head: int = 8
-    self.n_embd: int = 768
+    self.n_layer: int = 16
+    self.n_head: int = 12
+    self.n_embd: int = 1536
     self.hidden_dim: int = self.n_embd
     self.dropout: float = 0.1
     self.rms_eps: float = 1e-6
@@ -135,7 +135,7 @@ class MultiheadAttention(nn.Module):
             
       if attn_mask is not None:#attn_mask [b, s]
         attn_scores += (1.0 - attn_mask.unsqueeze(1).unsqueeze(2)) * -1e9
-      atten_scores = atten_scores * mscale
+      attn_scores = attn_scores * mscale
       attn_probs = torch.softmax(attn_scores, dim=-1)
       attn_probs = self.dropout(attn_probs)
       # 向量加权求和
@@ -266,10 +266,6 @@ class Model(nn.Module):
     finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=input_ids.device)
     if streamer : streamer.put(input_ids.cpu())
     for _ in range(max_new_tokens):
-      # 如果序列太长，只取最后 max_seq_len 个token
-      if input_ids.size(1) > self.max_seq_len and KV_cache is not None:
-        KV_cache = [(k[:,:,-self.max_seq_len:,:], v[:,:,-self.max_seq_len:,:])
-                for k, v in KV_cache]
       # 前向计算
       logits, loss, KV_cache = self(ids, use_cache=True, KV_cache=KV_cache)
       # 采样策略
@@ -296,6 +292,8 @@ class Model(nn.Module):
       # 附加到序列上
       input_ids = torch.cat([input_ids, ids], dim=1)  # (B, T+1)
       completion_ids = torch.cat([completion_ids, ids], dim=1)
+      if finished.all(): break
+      if input_ids.shape[1] > self.max_seq_len: break
     
     if streamer: streamer.end()
     return input_ids, completion_ids, KV_cache
