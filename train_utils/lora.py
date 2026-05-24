@@ -1,27 +1,28 @@
 import torch
 import torch.nn as nn
 import json
-
+from typing import List, Dict
 class LoraConfig:
-  def __init__(self, alpha: int, r: int, target_modules: list[str]):
-    alpha: int = alpha,
-    r: int = r,
-    target_modules: list[str] = target_modules
+  def __init__(self, alpha: int, r: int, target_modules: List[str]):
+    self.alpha: int = alpha
+    self.r: int = r
+    self.target_modules: list[str] = target_modules
 
 #增加lora模块
-def apply_lora(model, lora_config):
+def apply_lora(model, lora_config: LoraConfig, device):
   scaling = lora_config.alpha / lora_config.r
   r = lora_config.r
   alpha = lora_config.alpha
   target_modules = lora_config.target_modules
   for name, module in model.named_modules():
     if isinstance(module, nn.Linear) and any(x in name for x in target_modules):
-      lora = Lora(module.weight.shape[1], module.weight.shape[0], r, module.weight.dtype).to(model.device)#非线性层形状不是这样
+      lora = Lora(module.weight.shape[1], module.weight.shape[0], r, module.weight.dtype).to(device)#非线性层形状不是这样
       #冻结权重
       module.weight.requires_grad = False
       if module.bias is not None: module.bias.requires_grad = False
       #绑定lora
-      setattr(module, "lora", lora)
+      #setattr(module, "lora", lora)
+      module.__dict__["lora"] = lora
       orig_forward = module.forward
       module.orig_forward = orig_forward
       
@@ -36,7 +37,7 @@ class Lora(nn.Module):
     self.A = nn.Linear(in_dim, rank, bias=False, dtype=dtype)
     self.B = nn.Linear(rank, out_dim, bias=False, dtype=dtype)
     nn.init.normal_(self.A.weight, mean=0.0, std=0.02)   
-    nn.init.zeros_(self.B.weight)
+    nn.init.normal_(self.B.weight, mean=0.0, std=0.02)
 
     
   def forward(self, x: torch.tensor):
@@ -44,20 +45,21 @@ class Lora(nn.Module):
     
 
 def load_lora(model, path: str):
-  state_dict = torch.load(path+"lora_model.pt", map_location=model.device)["state_dict"]
+  state_dict = torch.load(path+"lora_model.pt", map_location="cpu")["state_dict"]
   for name, module in model.named_modules():
-    if hasattr(module, "lora"):
+    if "lora" in module.__dict__:
       lora_state = {k.replace(f"{name}.lora.", "") : v for k, v in state_dict.items() if f"{name}.lora." in k}
-      module.lora.load_state_dict(lora_state)
+      module.__dict__["lora"].load_state_dict(lora_state)
   
 
 def save_lora(model, save_path: str, lora_config: LoraConfig):
   orig_model = getattr(model, "_orig_mod", model)#原始模型
   state_dict = {}
+  target_modules = lora_config.target_modules
   for name, module in orig_model.named_modules():
-    if hasattr(module, "lora"):
+    if "lora" in module.__dict__:
       mix_name = name[len("module."):] if name.startswith("module.") else name
-      lora_state = {f"{mix_name}.lora.{k}" : v.cpu().half() for k, v in module.lora.state_dict().items()}#{A.weight:tensor, B.weight:tensor}
+      lora_state = {f"{mix_name}.lora.{k}" : v.cpu().half() for k, v in module.__dict__["lora"].state_dict().items()}#{A.weight:tensor, B.weight:tensor}
       state_dict.update(lora_state)
   with open(save_path+"lora_config.json", 'w') as f:
     json.dump({"alpha":lora_config.alpha, "rank": lora_config.r, "target_modules": lora_config.target_modules}, f)
@@ -73,10 +75,10 @@ def merge_lora(model, lora_path: str):
   scaling = alpha / r
   load_lora(model, lora_path)
   orig_model = getattr(model, "_orig_mod", model)
-  state_dict = {k : v.cpu().half() for k, v in orig_model.state_dict().items() if ".lora." not in k}
+  state_dict = {k : v.cpu().half() for k, v in orig_model.state_dict().items()}
   for name, module in orig_model.named_modules():
-    if isinstance(module, nn.Linear) and hasattr(module, "lora"):
-      state_dict[f"{name}.weight"] =(module.weight.detach().cpu().half() + scaling * (module.lora.B.weight @ module.lora.A.weight).detach().cpu().half())
+    if isinstance(module, nn.Linear) and "lora" in module.__dict__:
+      state_dict[f"{name}.weight"] =(module.weight.detach().cpu().half() + scaling * (module.__dict__["lora"].B.weight @ module.__dict__["lora"].A.weight).detach().cpu().half())
   
   torch.save(state_dict, lora_path+"merge_model.pt")
       
